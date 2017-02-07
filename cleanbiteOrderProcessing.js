@@ -1,0 +1,464 @@
+var arrayMaxWidth = 0;
+var SEPARATINGCHAR = '|';
+var ITEMSEPARATINGCHAR = '`';
+var REMARKSEPARATINGCHAR = '#';
+//search operators : https://support.google.com/mail/answer/7190?hl=en
+//seaarch opertaiors 2 : https://support.google.com/inbox/answer/6067584?hl=en
+//Credit: https://gist.github.com/oshliaer/70e04a67f1f5fd96a708
+
+var orderNumList = [];
+var repeatedOrderNumList = [];
+
+function onOpen() {
+  var ui = SpreadsheetApp.getUi();
+  // Or DocumentApp or FormApp.
+  ui.createMenu('CLEANBITES')
+      .addItem('Get Confirmed Orders', 'MainFunction')
+      .addSeparator()
+      .addSubMenu(
+        ui.createMenu('Send SMS to users (NOTE READY)')
+          .addItem('Get Member Qty(NOT READY)', 'menuItem2'))
+      .addToUi();
+}
+
+function menuItem2() {
+  SpreadsheetApp.getUi() // Or DocumentApp or FormApp.
+     .alert('NOT READY YET');
+}
+//-------------------------
+//    Main function
+//-------------------------
+function MainFunction() {
+  var searchDateTerm = "after:";
+  var intDays = 0;
+  var days = Browser.inputBox('This script scans confirmed email from oddle. Input: number of days from today. For "Today only" type 0 or leave empty. "From Yesterday" type 1. USE #after:YYYY/MM/DD before:YYYY/MM/DD for custom search', Browser.Buttons.OK_CANCEL);
+
+  if(days!='cancel'){
+  if (days=="") days="0";
+    if (days.match(/\#/)){
+      searchDateTerm = days.replace("#","");  
+      Logger.log("Userinput:"+searchTerm);
+    }else{  
+      
+      ;
+      searchDateTerm = searchDateTerm + getDateTime(days);
+      Logger.log("Userinput:"+searchDateTerm);
+    }
+    
+    var SEARCH_QUERY = "from:(courier@oddle.me) subject:(Confirmed) "+ searchDateTerm;
+    
+    var array2d = [];  
+    array2d = getEmails_(SEARCH_QUERY);
+    
+    if (array2d.length==0){
+      Logger.log("Main-Error: search empty:"+array2d);
+    }else{
+      if (array2d) {
+        appendData_(SpreadsheetApp.getActiveSheet(), array2d);
+      }
+    }
+  }else{
+    Logger.log("userinput cancel");
+  }
+ 
+}
+
+//-------------------------
+//    Scan Email
+//-------------------------
+function getEmails_(q) {
+  Logger.log(q);
+  
+  var emails = [];
+  var threads = GmailApp.search(q);
+  
+  Logger.log("Emails found:" + threads.length);
+  
+  //MAIN LOOP PROCESS ALL EMAILS
+  var ii = 0;// to accomodate for array adjustment because we break a single email into multiple orders according to date of the items
+ 
+  for (var i=0; i<threads.length; i++) {
+    
+    Logger.log("\n[[[MAIN LOOP]]]:Processing Email num: "+i);
+    Logger.log("Array item ii: "+ii);
+    
+    var msg = threads[i].getMessages()[0];
+    var mainOrderDetails = [];
+    
+    var itemisedMenuDetails = [];
+    
+    mainOrderDetails.push([ msg.getDate() ]);//Order Date
+    mainOrderDetails.push([ processSubject( msg.getSubject().replace("# ","") ) ]);//Order ID
+    checkRepeatOrder( processSubject( msg.getSubject().replace("# ","") ) );
+    //Cleanup the body of the email 
+    Logger.log("Email Subject raw> \n" + msg.getSubject()+ "\n");      
+    var bodyElements = processBody( msg.getBody()
+                                   .replace(/<\/td>/g,ITEMSEPARATINGCHAR)
+                                   .replace(/<tr>/g,'^')
+                                   .replace(/<\/tr>/g,'\n')                                 
+                                   .replace(/<.*?>/g, '')
+                                   .replace(/^\s*\n/gm, '')
+                                   .replace(/^\s*/gm, '')
+                                   .replace(/\s*\n/gm, '\n')
+                                   .replace("&nbsp;","")               
+                                   ,SEPARATINGCHAR
+                                  );
+    //Logger.log("After Clean up \n" + msg.getBody()+ "\n");
+    //Prints all split Items
+    /*
+    for ( var j in bodyElements){
+    if (bodyElements.length > arrayMaxWidth) {arrayMaxWidth = bodyElements.length;}
+    emails[i].push([ bodyElements[j] ]);
+    }
+    */
+    
+    //Save only specific items
+    mainOrderDetails.push([ bodyElements[3].replace("&nbsp;","") ]);//firstname
+    mainOrderDetails.push([ bodyElements[4].replace("&nbsp;","") ]);//lastname
+    mainOrderDetails.push([ bodyElements[7].replace("&nbsp;","") ]);//mobile
+    mainOrderDetails.push([ bodyElements[8].replace("&nbsp;","") ]);//email
+    mainOrderDetails.push([ bodyElements[16].replace("&nbsp;","") ]);//Pickup or Delivery Address
+    mainOrderDetails.push([ bodyElements[18].replace("&nbsp;","") ]);//Payments method
+    mainOrderDetails.push([ bodyElements[23].replace("&nbsp;","") ]);//Remarks +1
+    //mainOrderDetails.push([ bodyElements[25] ]);//Order details Unsorted<FOR DEBUG>
+   // Logger.log("OriginRemarks:"+bodyElements[23]);
+   
+    var cleanItemDates = "NOREMARKS";
+     //if remarks has REMARKSEPARATINGCHAR Process and prepare date for clean food
+    if (bodyElements[23].match(REMARKSEPARATINGCHAR)){ cleanItemDates = processRemarksForEverydayCleanMenu( bodyElements[23].replace("&nbsp;","") ); Logger.log("processremark>>\n"+cleanItemDates); }
+      
+    //Breakdown order details
+    var itemisedMenuItem = [];
+    itemisedMenuItem = itemiseMenuByDate( bodyElements[25],cleanItemDates );
+     
+    Logger.log("#of items by date (2+3*n):"+ itemisedMenuItem.length)
+    
+    mainOrderDetails.push([ itemisedMenuItem[0] ]);//Promotion
+    mainOrderDetails.push([ itemisedMenuItem[1] ]);//Total value                       
+    
+    //Logger.log("ItemisedMenuItem>>\n"+(itemisedMenuItem));
+    
+    //Copy the main order details attach each menu item and create a new row for each item
+    for ( var m=0; m < ( (itemisedMenuItem.length -2)/3 ); m++ ){//minus promotion&total and then each item is a set of 3
+      emails[ii+m] = [];
+      
+      //insert order detail 
+      
+      for (var n=0;n<mainOrderDetails.length;n++){
+        
+        if(n==4){ // insert menu item details after Name
+          emails[ii+m].push([ itemisedMenuItem[ (m+2)+(m*2)+0 ] ]);//item name
+          emails[ii+m].push([ parseInt(itemisedMenuItem[ (m+2)+(m*2)+1 ] ) ]);//item quantity
+          emails[ii+m].push([ itemisedMenuItem[ (m+2)+(m*2)+2 ] ]);//item date
+        }
+        
+        //Logger.log("insert main order: ii,m,m+ii,n>[" + ii + "," + m + "," + (m+ii) + "," + n + "]")
+        //Logger.log(mainOrderDetails[n] +"\n.");
+        emails[(ii+m)].push([ mainOrderDetails[n] ]);//insert main order details
+      }
+      
+      // Logger.log("Show iterative email array email[m+i]:\n"+emails[i+m]+"\n");   
+    }
+    Logger.log("End pushing items into main array\n\n");
+    
+    if( m > 1) ii = ii + (m-1);
+    ii++;
+    if(arrayMaxWidth < n) arrayMaxWidth = n+3;//item name + real quantity + final date
+  }// END MAIN LOOP
+       
+    Logger.log("Get Email Complete, check array size:"+emails.length);
+    // Logger.log("EE>"+emails);
+    return emails;
+}
+
+
+//--------------------------------------------------------------------
+
+//    Itemise Menu By Date
+//      1D Array structure
+//        [0] = PROMOTION DETAILS
+//        [1] = TOTAL VALUE
+//        [2] = (1)ITEM NAME
+//        [3] = (2)ITEM QUANTITY
+//        [4] = (3)ITEM DATE
+//        [5] = (1)ITEM NAME2
+//        [6] = (2)ITEM QUANTITY2
+//        [7] = (3)ITEM DATE2
+//         ITEM REPEATS IN SETS OF 3 ,NAME,QTY,DATE
+//--------------------------------------------------------------------
+function itemiseMenuByDate( rawOrderDetails ,cleanItemDates){
+  var cleanOutput = [];
+  var rawSplit = rawOrderDetails.split('^');
+  var lastItemNum = rawSplit.length-1;
+  
+  //search for Subtotal which is the end column for Items
+  var subtotalNum = searchStringInArray('Subtotal',rawSplit);
+  // right before subtotal there is an empty column
+  var endOfItemsNum = subtotalNum - 1;
+  
+  // Between subtotal and delivery cost Might exist promotion and discounts.
+  var delivercostNum = searchStringInArray('Delivery Cost',rawSplit);
+  
+  if (delivercostNum - subtotalNum > 1 ){//if there is nothing between delivery cost and subtotal then there is no promotion
+    cleanOutput.push([ rawSplit[subtotalNum+1] ]);//Promotion details
+  }else{
+    cleanOutput.push([ "-" ]);//no promotion
+  }
+  
+  //----Total Value raw------
+  //Total:,174.00,:
+  //,:
+  var totalValue = rawSplit[lastItemNum-1].split(ITEMSEPARATINGCHAR);// Total value is the 2nd last item
+  cleanOutput.push([ totalValue[1] ]);
+  
+  //loop through all items and save as 1D array
+  for (var h = 3; h < endOfItemsNum; h++){
+    var items = [];
+    var itemsDateRaw = [];
+    var itemsDate = [];
+    var finalDate = "Invalid date, must be: (dd-MMM) ";//item date error by default
+    var finalQuantity = 0;
+    var realQuantity = 0;
+    var itemName = "";
+    
+    items     = rawSplit[h].split(ITEMSEPARATINGCHAR);
+    itemsDateRaw = rawSplit[h].split('(');
+    
+    itemName = items[0];//item name
+    realQuantity = parseInt(items[1]);//item quantity
+    
+    //if contains date insert date ; normal menu
+    if (itemsDateRaw.length > 1){ 
+      
+      itemsDate = itemsDateRaw[1].split(')');
+      finalDate = itemsDate[0];//item date
+      
+      cleanOutput.push([ itemName ]);  
+      cleanOutput.push([ parseInt(realQuantity) ]);  
+      cleanOutput.push([ finalDate ]); 
+      
+    }else{
+      //if no date is it clean food.
+      Logger.log("No date in menu title");
+      if( itemName.match(/\[/g) && itemName.match(/\#/g)){ 
+        if(cleanItemDates == "NOREMARKS"){
+           cleanOutput.push([ itemName ]);  
+           cleanOutput.push([ parseInt(realQuantity) ]);  
+           cleanOutput.push([ "expecting_date_in_remarks" ]); 
+          Logger.log("issue in remarks");
+        }else{
+          Logger.log("This is cleanfood:"+itemName);
+          var cleanFoodItem = itemName.split('[');
+          var cleanFoodCode = cleanFoodItem[1].replace("]","");
+          var numOfRemarks = 0;
+          
+          //loop through all the food codes in remarks to fit order items
+          numOfRemarks = cleanItemDates.length;// we need this to run the secondary loop for all similar code items
+          Logger.log("# of remarks:"+ numOfRemarks);
+          
+          for ( var c in cleanItemDates) {
+            var remarksQuantity = 1;
+            var breakQuantity = 0;
+            
+            //if cleancode match, process date and quantity
+            if(cleanItemDates[c].match(cleanFoodCode)){
+              Logger.log("code match:"+cleanFoodCode);
+              
+              //if remark date exist
+              if ( cleanItemDates[c].match(/\(/)){
+                
+                var datewithbracket = cleanItemDates[c].match(/\((.*?)\)/g);// (\() = ( ((.*?))=anything
+                finalDate = datewithbracket[0].replace("(","").replace(")","");
+                
+                var codeNDate = cleanItemDates[c].split('(');
+                
+                //Check for quantity
+                if ( codeNDate[0].match(/\-/) ){ 
+                  //Quantity defined change it from the default of 1 - most probably need to do a break
+                  var qtyWithDash = cleanItemDates[c].match(/\-\s*\d+/g);
+                  remarksQuantity = parseInt(qtyWithDash[0].replace("-",""));// (\-)=dash (\s*)=any number of white space (\d+) 1 or more digits
+                }              
+                
+                //first output current quantity and date
+                cleanOutput.push([ itemName ]);  
+                cleanOutput.push([ parseInt(remarksQuantity) ]);  
+                cleanOutput.push([ finalDate ]); 
+                cleanItemDates[c] = "extracted";//finish processing date and quantity. Delete code so it doesnt affect next item
+                
+                //check abnormal quantity - requires breaking into multiple items if not 0
+                breakQuantity = realQuantity - remarksQuantity;
+                
+                //output the rest of quantity and date until no more break quantity
+                for (var cc=0;cc<numOfRemarks && breakQuantity;cc++){
+                  var crnRemarksQuantity = 1;
+                  if(cleanItemDates[cc].match(cleanFoodCode)){
+                    if ( cleanItemDates[cc].match(/\(/)){
+                      var datewithbracket2 = cleanItemDates[cc].match(/\((.*?)\)/g);// get date
+                      var finalDate2 = datewithbracket2[0].replace("(","").replace(")","");
+                      var codeNDate2 = cleanItemDates[cc].split('(');
+                      var rawQty = 0;
+                      //Check for quantity
+                      if ( codeNDate2[0].match(/\-/) ){ 
+                        Logger.log("rawqtyremarks:"+cleanItemDates[cc].match(/\-\s*\d+/g));
+                        rawQty = cleanItemDates[cc].match(/\-\s*\d+/g)
+                        crnRemarksQuantity = parseInt(rawQty[0].replace("-",""));// get quantity
+                      }     
+                      
+                      //first output current quantity and date
+                      cleanOutput.push([ itemName ]);  
+                      cleanOutput.push([ parseInt(crnRemarksQuantity) ]);  
+                      cleanOutput.push([ finalDate2 ]); 
+                      cleanItemDates[cc] = "extracted";//finish processing date and quantity. Delete code so it doesnt affect next item
+                      breakQuantity = breakQuantity-crnRemarksQuantity;
+                      // Logger.log("CHECK4:BreakQty / realQty / crnQty:"+breakQuantity+" / "+realQuantity+ " / "+crnRemarksQuantity);
+                    }
+                  }
+                }
+                
+                if (breakQuantity) Logger.log("ERROR:BreakQuantity is not 0:"+breakQuantity);  
+              }
+        
+              
+            }else{
+              Logger.log("ERROR:Remark has no date:" + cleanItemDates[c]);
+            }
+            
+          }//if clean food doesnt match do nothing leave it for next item        
+        }//end loop all food codes
+      }else{
+        //if not clean food ERROR dont know why this item has no date.
+        Logger.log("is not clean food, unknown food :"+items[0]+"\n"+cleanItemDates);
+        cleanOutput.push([ itemName ]);  
+        cleanOutput.push([ parseInt(realQuantity) ]);  
+        cleanOutput.push([ finalDate ]); 
+        
+      }
+    }// end insert date
+  }//end looping all items
+  
+  return cleanOutput;
+  
+}
+
+//-------------------------
+//    Append into spreadsheet 
+//-------------------------
+function appendData_(sheet, array2dSq) {
+var sqArray = [];
+  //array2dSq = squarefy2dArray(array2dSq);
+  loggerlogArraySize(array2dSq);
+  Logger.log( ("getRange"+(sheet.getLastRow() + 1)) + "," + "1, " + array2dSq.length + "," + arrayMaxWidth); 
+  //Logger.log ("sqArraylog:"+array2dSq);
+  sheet.getRange((sheet.getLastRow() + 1), 1, array2dSq.length, arrayMaxWidth).setValues( array2dSq );//get last empty row
+
+}
+
+//-------------------------
+//    Process remarks to extract all REMARKSEPARATINGCHAR instruction to match to each clean food
+//-------------------------
+function processRemarksForEverydayCleanMenu(remarksRawText){
+  var cleanedUpArray = [];
+  var remarksArray = remarksRawText.split(REMARKSEPARATINGCHAR);
+  var datedivider = /\(/g; 
+  Logger.log("RemarkRawText>>"+remarksRawText);
+  //Make sure only our code is saved, ignoring customer remarks
+  for ( var r in remarksArray){
+    Logger.log("RR>"+remarksArray[r]);
+    if ( remarksArray[r].match(datedivider) ) {
+      cleanedUpArray.push(remarksArray[r]);
+    }
+  }  
+        return cleanedUpArray;
+}
+
+function checkRepeatOrder(orderNumber){
+  var repeatOrder = false;
+  for( var x in orderNumList){
+    if(orderNumList[x] == orderNumber){
+      repeatedOrderNumList.push([ orderNumber ]);
+      Browser.msgBox("Repeated Order Warning","Repeat order found:"+ repeatedOrderNumList ,Browser.Buttons.OK_CANCEL);
+      repeatOrder = true;
+    }    
+  }
+  
+  if(!repeatOrder) orderNumList.push([ orderNumber ]);
+  return repeatOrder;
+}
+//----------------------------------
+// Function tools
+//----------------------------------
+
+//Gets the Date in 00:00 hr and returns it in the format Unix timestamp (seconds)
+function getDateTime(days){
+  
+  var now = new Date();
+  now.setDate(now.getDate()-parseInt(days));
+  var dateAt0000 = now.getTime()/1000;
+  return (dateAt0000 - (dateAt0000 % (24*60*60))).toFixed(0);
+  
+}
+
+function searchStringInArray (str, strArray) {
+    for (var j=0; j<strArray.length; j++) {
+        if (strArray[j].match(str)) return j;
+    }
+    return -1;
+}
+
+function processSubject(emailSubject){
+  var orderID = emailSubject.split("-");
+  return orderID[0];
+}
+
+function processBody(emailBody,SEPARATINGCHAR){
+  return emailBody.split(SEPARATINGCHAR);
+}
+
+function updateArrayMaxWidth(irregular2dArray){
+  for ( var x in irregular2dArray ){
+    if(arrayMaxWidth < irregular2dArray[x].length){  arrayMaxWidth = irregular2dArray[x].length;     Logger.log("arrayMaxWidth: "+arrayMaxWidth); }
+
+  }
+}
+
+//-------------------------
+//    To easily set values array width must not be irregular
+//-------------------------
+function squarefy2dArray(irregular2dArray){
+  
+  updateArrayMaxWidth(irregular2dArray);
+  Logger.log("arrayMaxWidth:"+arrayMaxWidth);
+  
+  var irregularity = 0;
+  for ( var x in irregular2dArray ){
+    
+    irregularity = arrayMaxWidth - irregular2dArray[x].length;
+    
+    if (irregularity > 0 && irregularity < 1000){//safety lock
+      
+      for (var y = 0; y < irregularity; y++){
+        irregular2dArray[x].push("-X-");
+      }
+     
+    }else{
+     //Logger.log("<No Irregularity>  x:" + x + " arraywidth:" + irregular2dArray[x].length  + " fixwidth:" +arrayMaxWidth + " infiniteloopcheck:" + irregularity);
+    }
+  }
+  return irregular2dArray;
+ 
+}
+
+//-------------------------
+//    To easily set values array width must not be irregular
+//-------------------------
+function loggerlogArraySize(thisArray){
+  
+  Logger.log(">"+thisArray.length)
+  for ( var x in thisArray ){
+    Logger.log(">>" + x + "::" + thisArray[x].length + "::\n");
+    //Logger.log(thisArray[x]);
+  }
+ 
+  // Logger.log("0"+ thisArray[0]);
+}
+
