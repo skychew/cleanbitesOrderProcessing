@@ -39,13 +39,11 @@ function MainFunction() {
       searchDateTerm = days.replace("#","");  
       Logger.log("Userinput:"+searchTerm);
     }else{  
-      
-      ;
       searchDateTerm = searchDateTerm + getDateTime(days);
       Logger.log("Userinput:"+searchDateTerm);
     }
     
-    var SEARCH_QUERY = "from:(courier@oddle.me) subject:(Confirmed) "+ searchDateTerm;
+    var SEARCH_QUERY = "from:(courier@oddle.me) subject:(Confirmed Delivery || Confirmed Pickup) "+ searchDateTerm;
     
     var array2d = [];  
     array2d = getEmails_(SEARCH_QUERY);
@@ -75,8 +73,23 @@ function getEmails_(q) {
   Logger.log("Emails found:" + threads.length);
   
   //MAIN LOOP PROCESS ALL EMAILS
-  var ii = 0;// to accomodate for array adjustment because we break a single email into multiple orders according to date of the items
- 
+  var ii = 1;// to accomodate for array adjustment because we break a single email into multiple orders according to date of the items. II=0 USED FOR TITLE.
+  emails[0] = [];
+  emails[0].push( "ORDER DATE" );
+  emails[0].push("ORDER ID" );
+  emails[0].push("FIRSTNAME" );
+  emails[0].push("LASTNAME" );
+  emails[0].push("ITEMNAME" );
+  emails[0].push("QTY" );
+  emails[0].push("DATE" );
+  emails[0].push("MOBILE#" );
+  emails[0].push("EMAIL" );
+  emails[0].push("DEL/PICKUP ADD" );
+  emails[0].push("PAYMENT METHOD" );
+  emails[0].push("REMARKS" );
+  emails[0].push("PROMOTION" );
+  emails[0].push("TOTAL" );
+  
   for (var i=0; i<threads.length; i++) {
     
     Logger.log("\n[[[MAIN LOOP]]]:Processing Email num: "+i);
@@ -86,6 +99,8 @@ function getEmails_(q) {
     var mainOrderDetails = [];
     
     var itemisedMenuDetails = [];
+    
+
     
     mainOrderDetails.push([ msg.getDate() ]);//Order Date
     mainOrderDetails.push([ processSubject( msg.getSubject().replace("# ","") ) ]);//Order ID
@@ -103,7 +118,8 @@ function getEmails_(q) {
                                    .replace("&nbsp;","")               
                                    ,SEPARATINGCHAR
                                   );
-    //Logger.log("After Clean up \n" + msg.getBody()+ "\n");
+    //Logger.log("After Clean up \n" + bodyElements+ "\n");
+    if(bodyElements[0].match('Dear Merchant')<0) Logger.log('ERROREMAIL: Dear Merchant did not exist');
     //Prints all split Items
     /*
     for ( var j in bodyElements){
