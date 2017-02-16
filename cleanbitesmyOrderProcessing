@@ -1,6 +1,7 @@
 var arrayMaxWidth = 0;
 var SEPARATINGCHAR = '|';
 var ITEMSEPARATINGCHAR = '`';
+var ITEMSEPARATINGCHARREGEX = /`/g;
 var REMARKSEPARATINGCHAR = '#';
 //search operators : https://support.google.com/mail/answer/7190?hl=en
 //seaarch opertaiors 2 : https://support.google.com/inbox/answer/6067584?hl=en
@@ -43,28 +44,28 @@ function MainFunction() {
       Logger.log("Userinput:"+searchDateTerm);
     }
     
-    var SEARCH_QUERY = "from:(courier@oddle.me) subject:(Confirmed Delivery || Confirmed Pickup) "+ searchDateTerm;
+    var SEARCH_QUERY = "from:(courier@oddle.me) subject:(Confirmed Delivery || Confirmed Pickup) -in:trash "+ searchDateTerm;
     
     var array2d = [];  
-    array2d = getEmails_(SEARCH_QUERY);
+    array2d = getOrders_(SEARCH_QUERY);
     
     if (array2d.length==0){
       Logger.log("Main-Error: search empty:"+array2d);
     }else{
       if (array2d) {
         appendData_(SpreadsheetApp.getActiveSheet(), array2d);
+        if(repeatedOrderNumList.length>0) checkRepeatOrder();
       }
     }
   }else{
     Logger.log("userinput cancel");
   }
- 
 }
 
 //-------------------------
 //    Scan Email
 //-------------------------
-function getEmails_(q) {
+function getOrders_(q) {
   Logger.log(q);
   
   var emails = [];
@@ -96,90 +97,98 @@ function getEmails_(q) {
     Logger.log("Array item ii: "+ii);
     
     var msg = threads[i].getMessages()[0];
+    var cleanSubject = processSubject(msg.getSubject().replace("# ",""));
+    
     var mainOrderDetails = [];
-    
     var itemisedMenuDetails = [];
-    
-
-    
-    mainOrderDetails.push([ msg.getDate() ]);//Order Date
-    mainOrderDetails.push([ processSubject( msg.getSubject().replace("# ","") ) ]);//Order ID
-    checkRepeatOrder( processSubject( msg.getSubject().replace("# ","") ) );
-    //Cleanup the body of the email 
-    Logger.log("Email Subject raw> \n" + msg.getSubject()+ "\n");      
+        
+    //Cleanup the body of the email
     var bodyElements = processBody( msg.getBody()
+                                   .replace(/Remarks\|(.|\n|\r)*?Order\|/gm,cleanupRemarks(msg.getBody().match(/Remarks\|(.|\n|\r)*?Order\|/gm)))
                                    .replace(/<\/td>/g,ITEMSEPARATINGCHAR)
                                    .replace(/<tr>/g,'^')
                                    .replace(/<\/tr>/g,'\n')                                 
-                                   .replace(/<.*?>/g, '')
+                                   //.replace(/<.*?>/g, '') -- problem with <3 </td> below used to exclude '<' char
+                                   .replace(/<[^<]*?>/g,'')
                                    .replace(/^\s*\n/gm, '')
                                    .replace(/^\s*/gm, '')
                                    .replace(/\s*\n/gm, '\n')
                                    .replace("&nbsp;","")               
                                    ,SEPARATINGCHAR
                                   );
-    //Logger.log("After Clean up \n" + bodyElements+ "\n");
-    if(bodyElements[0].match('Dear Merchant')<0) Logger.log('ERROREMAIL: Dear Merchant did not exist');
-    //Prints all split Items
-    /*
-    for ( var j in bodyElements){
-    if (bodyElements.length > arrayMaxWidth) {arrayMaxWidth = bodyElements.length;}
-    emails[i].push([ bodyElements[j] ]);
-    }
-    */
     
-    //Save only specific items
-    mainOrderDetails.push([ bodyElements[3].replace("&nbsp;","") ]);//firstname
-    mainOrderDetails.push([ bodyElements[4].replace("&nbsp;","") ]);//lastname
-    mainOrderDetails.push([ bodyElements[7].replace("&nbsp;","") ]);//mobile
-    mainOrderDetails.push([ bodyElements[8].replace("&nbsp;","") ]);//email
-    mainOrderDetails.push([ bodyElements[16].replace("&nbsp;","") ]);//Pickup or Delivery Address
-    mainOrderDetails.push([ bodyElements[18].replace("&nbsp;","") ]);//Payments method
-    mainOrderDetails.push([ bodyElements[23].replace("&nbsp;","") ]);//Remarks +1
-    //mainOrderDetails.push([ bodyElements[25] ]);//Order details Unsorted<FOR DEBUG>
-   // Logger.log("OriginRemarks:"+bodyElements[23]);
-   
-    var cleanItemDates = "NOREMARKS";
-     //if remarks has REMARKSEPARATINGCHAR Process and prepare date for clean food
-    if (bodyElements[23].match(REMARKSEPARATINGCHAR)){ cleanItemDates = processRemarksForEverydayCleanMenu( bodyElements[23].replace("&nbsp;","") ); Logger.log("processremark>>\n"+cleanItemDates); }
+    if( !checkRepeatOrder(cleanSubject) && bodyElements[0].match('Dear Merchant') ){
+
+    
+      mainOrderDetails.push([ msg.getDate() ]);//Order Date
+      mainOrderDetails.push([ cleanSubject ]);//Order ID
       
-    //Breakdown order details
-    var itemisedMenuItem = [];
-    itemisedMenuItem = itemiseMenuByDate( bodyElements[25],cleanItemDates );
-     
-    Logger.log("#of items by date (2+3*n):"+ itemisedMenuItem.length)
-    
-    mainOrderDetails.push([ itemisedMenuItem[0] ]);//Promotion
-    mainOrderDetails.push([ itemisedMenuItem[1] ]);//Total value                       
-    
-    //Logger.log("ItemisedMenuItem>>\n"+(itemisedMenuItem));
-    
-    //Copy the main order details attach each menu item and create a new row for each item
-    for ( var m=0; m < ( (itemisedMenuItem.length -2)/3 ); m++ ){//minus promotion&total and then each item is a set of 3
-      emails[ii+m] = [];
+      Logger.log("Email Date>" + msg.getDate());
+      Logger.log("Email Subject raw>" + msg.getSubject()+ "\n");  
       
-      //insert order detail 
+      //Prints all split Items
+      /*
+      for ( var j in bodyElements){
+      if (bodyElements.length > arrayMaxWidth) {arrayMaxWidth = bodyElements.length;}
+      emails[i].push([ bodyElements[j] ]);
+      }
+      */
+     // Logger.log("ConfirmedTime:"+bodyElements[1]);//Confirmed date and time.
+     // Logger.log("remarks:"+bodyElements[23]);//Confirmed date and time.
+     //       Logger.log("unknown:"+bodyElements[24]);//Confirmed date and time.
+      mainOrderDetails.push([ bodyElements[3].replace("&nbsp;","") ]);//firstname
+      mainOrderDetails.push([ bodyElements[4].replace("&nbsp;","") ]);//lastname
+      mainOrderDetails.push([ bodyElements[7].replace("&nbsp;","") ]);//mobile
+      mainOrderDetails.push([ bodyElements[8].replace("&nbsp;","") ]);//email
+      mainOrderDetails.push([ bodyElements[16].replace("&nbsp;","") ]);//Pickup or Delivery Address
+      mainOrderDetails.push([ bodyElements[18].replace("&nbsp;","") ]);//Payments method
+      mainOrderDetails.push([ bodyElements[23].replace("&nbsp;","") ]);//Remarks +1
+     // Logger.log("order details unsorted>"+ bodyElements[25] );//Order details Unsorted<FOR DEBUG>
+      // Logger.log("OriginRemarks:"+bodyElements[23]);
       
-      for (var n=0;n<mainOrderDetails.length;n++){
+      var cleanItemDates = "NOREMARKS";
+      //if remarks has REMARKSEPARATINGCHAR Process and prepare date for clean food
+      if (bodyElements[23].match(REMARKSEPARATINGCHAR)){ cleanItemDates = processRemarksForEverydayCleanMenu( bodyElements[23].replace("&nbsp;","") ); Logger.log("processremark>>\n"+cleanItemDates); }
+      
+      //Breakdown order details
+      var itemisedMenuItem = [];
+      itemisedMenuItem = itemiseMenuByDate( bodyElements[25],cleanItemDates );
+      
+      Logger.log("#of items by date (2+3*n):"+ itemisedMenuItem.length)
+      
+      mainOrderDetails.push([ itemisedMenuItem[0] ]);//Promotion
+      mainOrderDetails.push([ itemisedMenuItem[1] ]);//Total value                       
+      
+      //Logger.log("ItemisedMenuItem>>\n"+(itemisedMenuItem));
+      
+      //Copy the main order details attach each menu item and create a new row for each item
+      for ( var m=0; m < ( (itemisedMenuItem.length -2)/3 ); m++ ){//minus promotion&total and then each item is a set of 3
+        emails[ii+m] = [];
         
-        if(n==4){ // insert menu item details after Name
-          emails[ii+m].push([ itemisedMenuItem[ (m+2)+(m*2)+0 ] ]);//item name
-          emails[ii+m].push([ parseInt(itemisedMenuItem[ (m+2)+(m*2)+1 ] ) ]);//item quantity
-          emails[ii+m].push([ itemisedMenuItem[ (m+2)+(m*2)+2 ] ]);//item date
+        //insert order detail 
+        
+        for (var n=0;n<mainOrderDetails.length;n++){
+          
+          if(n==4){ // insert menu item details after Name
+            emails[ii+m].push([ itemisedMenuItem[ (m+2)+(m*2)+0 ] ]);//item name
+            Logger.log(itemisedMenuItem[ (m+2)+(m*2)+0 ]);
+            emails[ii+m].push([ parseInt(itemisedMenuItem[ (m+2)+(m*2)+1 ] ) ]);//item quantity
+            emails[ii+m].push([ itemisedMenuItem[ (m+2)+(m*2)+2 ] ]);//item date
+          }
+          
+          //Logger.log("insert main order: ii,m,m+ii,n>[" + ii + "," + m + "," + (m+ii) + "," + n + "]")
+          //Logger.log(mainOrderDetails[n] +"\n.");
+          emails[(ii+m)].push([ mainOrderDetails[n] ]);//insert main order details
         }
         
-        //Logger.log("insert main order: ii,m,m+ii,n>[" + ii + "," + m + "," + (m+ii) + "," + n + "]")
-        //Logger.log(mainOrderDetails[n] +"\n.");
-        emails[(ii+m)].push([ mainOrderDetails[n] ]);//insert main order details
+        // Logger.log("Show iterative email array email[m+i]:\n"+emails[i+m]+"\n");   
       }
-      
-      // Logger.log("Show iterative email array email[m+i]:\n"+emails[i+m]+"\n");   
-    }
-    Logger.log("End pushing items into main array\n\n");
-    
-    if( m > 1) ii = ii + (m-1);
-    ii++;
-    if(arrayMaxWidth < n) arrayMaxWidth = n+3;//item name + real quantity + final date
+      Logger.log("End pushing items into main array\n\n");
+       if( m > 1) ii = ii + (m-1);
+       ii++;
+      if(arrayMaxWidth < n) arrayMaxWidth = n+3;//item name + real quantity + final date
+    }// end if check for repeated email and errornous email
+    Logger.log("Skipped Duplicate email>"+cleanSubject);
   }// END MAIN LOOP
        
     Logger.log("Get Email Complete, check array size:"+emails.length);
@@ -203,6 +212,7 @@ function getEmails_(q) {
 //         ITEM REPEATS IN SETS OF 3 ,NAME,QTY,DATE
 //--------------------------------------------------------------------
 function itemiseMenuByDate( rawOrderDetails ,cleanItemDates){
+Logger.log(rawOrderDetails);
   var cleanOutput = [];
   var rawSplit = rawOrderDetails.split('^');
   var lastItemNum = rawSplit.length-1;
@@ -224,6 +234,8 @@ function itemiseMenuByDate( rawOrderDetails ,cleanItemDates){
   //----Total Value raw------
   //Total:,174.00,:
   //,:
+  Logger.log(lastItemNum-1);
+  Logger.log(rawSplit[lastItemNum-1]);
   var totalValue = rawSplit[lastItemNum-1].split(ITEMSEPARATINGCHAR);// Total value is the 2nd last item
   cleanOutput.push([ totalValue[1] ]);
   
@@ -334,7 +346,6 @@ function itemiseMenuByDate( rawOrderDetails ,cleanItemDates){
                 if (breakQuantity) Logger.log("ERROR:BreakQuantity is not 0:"+breakQuantity);  
               }
         
-              
             }else{
               Logger.log("ERROR:Remark has no date:" + cleanItemDates[c]);
             }
@@ -362,9 +373,8 @@ function itemiseMenuByDate( rawOrderDetails ,cleanItemDates){
 function appendData_(sheet, array2dSq) {
 var sqArray = [];
   //array2dSq = squarefy2dArray(array2dSq);
-  loggerlogArraySize(array2dSq);
+ //loggerlogArraySize(array2dSq);
   Logger.log( ("getRange"+(sheet.getLastRow() + 1)) + "," + "1, " + array2dSq.length + "," + arrayMaxWidth); 
-  //Logger.log ("sqArraylog:"+array2dSq);
   sheet.getRange((sheet.getLastRow() + 1), 1, array2dSq.length, arrayMaxWidth).setValues( array2dSq );//get last empty row
 
 }
@@ -389,15 +399,20 @@ function processRemarksForEverydayCleanMenu(remarksRawText){
 
 function checkRepeatOrder(orderNumber){
   var repeatOrder = false;
-  for( var x in orderNumList){
-    if(orderNumList[x] == orderNumber){
-      repeatedOrderNumList.push([ orderNumber ]);
-      Browser.msgBox("Repeated Order Warning","Repeat order found:"+ repeatedOrderNumList ,Browser.Buttons.OK_CANCEL);
-      repeatOrder = true;
-    }    
+  if(orderNumber){
+    for( var x in orderNumList){
+      if(orderNumList[x] == orderNumber){
+        repeatedOrderNumList.push([ orderNumber ]);
+        //Browser.msgBox("Repeated Order Warning","Repeat order found:"+ repeatedOrderNumList ,Browser.Buttons.OK_CANCEL);
+        repeatOrder = true;
+      }    
+    }
+  }else{
+    Browser.msgBox("Repeated Order Warning","Repeat order found:"+ repeatedOrderNumList ,Browser.Buttons.OK_CANCEL);
   }
   
   if(!repeatOrder) orderNumList.push([ orderNumber ]);
+
   return repeatOrder;
 }
 //----------------------------------
@@ -427,6 +442,7 @@ function processSubject(emailSubject){
 }
 
 function processBody(emailBody,SEPARATINGCHAR){
+  //Logger.log("##>"+emailBody);
   return emailBody.split(SEPARATINGCHAR);
 }
 
@@ -478,3 +494,25 @@ function loggerlogArraySize(thisArray){
   // Logger.log("0"+ thisArray[0]);
 }
 
+function cleanupRemarks(remarksRaw){
+
+  if(remarksRaw.length) var remarksRawString = remarksRaw[0];
+
+  if(remarksRawString){
+    Logger.log(">>:"+remarksRawString);
+    var newstring  = remarksRawString.replace(/`/g,'')
+    .replace('Remarks\|','~~~~').replace('Summary of Order\|','@@@@')
+    .replace(/\|/g,'')
+    .replace('~~~~','Remarks\|').replace('@@@@','\|Summary of Order\|');
+    
+    Logger.log(">>>>>:"+newstring);
+  }else{
+   Logger.log("novalue"); 
+  }
+  return newstring;
+
+                    
+  
+  
+}
+  
